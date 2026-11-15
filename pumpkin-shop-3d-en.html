@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pumpkin Shop</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f4ee;--card:#fff;--ink:#222;--sub:#777;--acc:#e8590c;--ok:#2b8a3e;--chip:#ffe8cc;--line:#ddd}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1b1b1f;--card:#26262c;--ink:#eee;--sub:#999;--acc:#ff922b;--ok:#69db7c;--chip:#4a3520;--line:#3a3a42}}
+:root[data-theme="dark"]{--bg:#1b1b1f;--card:#26262c;--ink:#eee;--sub:#999;--acc:#ff922b;--ok:#69db7c;--chip:#4a3520;--line:#3a3a42}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:440px;padding:10px 12px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:14px;font-weight:700}
+.pill{font-size:13px;background:var(--chip);padding:4px 10px;border-radius:99px;margin-left:4px}
+.stage{position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--line);touch-action:none}
+canvas{display:block;width:100%;height:auto}
+#panel{display:none;position:absolute;left:8px;right:8px;bottom:8px;max-height:82%;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;font-size:15px;line-height:1.6;box-shadow:0 4px 18px rgba(0,0,0,.3)}
+button{font:inherit;border:0;border-radius:12px;background:var(--chip);color:var(--ink);padding:10px 12px;touch-action:manipulation}
+button:disabled{opacity:.35}
+.wrap{display:flex;flex-wrap:wrap;gap:8px}
+.go{background:var(--acc);color:#fff;font-weight:700;width:100%;margin-top:8px}
+.lbl{font-size:12px;color:var(--sub);margin:4px 0}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border:0}
+.st{font-size:12px;color:var(--sub)}
+input{width:100%;font:inherit;font-size:16px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin-top:8px}
+.slot{min-width:64px;min-height:44px;border:2px dashed var(--line);background:transparent}
+.msg{color:var(--ok);font-weight:700}
+.ph{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.x{padding:4px 12px}
+.bar{margin-top:6px;font-size:13px;color:var(--sub);min-height:20px}
+</style>
+</head>
+<body>
+<main>
+<div class="top"><span>🎃 Pumpkin Shop</span><div><span class="pill" id="d"></span><span class="pill" id="ap"></span><span class="pill" id="m"></span></div></div>
+<div class="stage"><canvas id="cv" width="360" height="520"></canvas><div id="fade" style="position:absolute;inset:0;background:#000;pointer-events:none;opacity:1"></div><div id="panel"></div></div>
+<div class="bar" id="bar"></div>
+<div class="bar" id="hint">Drag on the screen to move (joystick). A button appears near buildings. Crops are harvested automatically near the fields, and the stall sells automatically when you stand in front of it.</div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const W=360,H=520,WH=640,GOAL=5000;
+const $=id=>document.getElementById(id),R=n=>Math.floor(Math.random()*n),cv=$('cv');
+let money=50,inv={p:0,s:0,pie:0,e:0,cake:0},L={plots:0,speed:0,cust:0,egg:0},sugar=false,cleared=false,mode=null,floats=[],fade=1,T=0;
+let P={x:180,y:300,tx:180,ty:300,pend:null,mv:false};
+const PR={p:30,pie:150,cake:400};
+const OB=[{id:'pf',x:80,y:92},{id:'sf',x:280,y:92},{id:'shop',x:70,y:310},{id:'ov',x:290,y:310},{id:'sell',x:180,y:445},{id:'truck',x:180,y:92}];
+const PN=()=>4+2*L.plots,GT=()=>7*Math.pow(.7,L.speed),SI=()=>6*Math.pow(.75,L.cust)*(1-Math.min(.35,fans*.01));
+function fl(t,x,y){floats.push({t,x,y,life:1.6})}
+const UP=[
+ {n:'🌱 Expand fields (+2 plots)',c:()=>[100,250,450][L.plots],ok:()=>L.plots<3,go:()=>L.plots++},
+ {n:'⚡ Faster growth',c:()=>[150,350][L.speed],ok:()=>L.speed<2,go:()=>L.speed++},
+ {n:'📣 Build a signboard (more customers)',c:()=>[120,260][L.cust],ok:()=>L.cust<2,go:()=>L.cust++},
+ {n:'🎋 Buy sugarcane field (unlocks pies! oven included)',c:()=>400,ok:()=>!sugar,go:()=>{sugar=true;sugarFX()}}];
+function hd(t){return'<div class="ph"><b>'+t+'</b><button class="x" data-a="close">✕</button></div>'}
+function shopView(){
+  let h=hd('📣 Shop Upgrades')+'<div class="st">Money ¥'+money+'</div>',n=0;
+  UP.forEach((u,i)=>{if(u.ok()){n++;h+='<div class="row"><span>'+u.n+'<div class="st">¥'+u.c()+'</div></span><button data-a="up" data-v="'+i+'" '+(money<u.c()?'disabled':'')+'>Buy</button></div>'}});
+  if(!sugar)h+='<div class="st" style="margin-top:8px">💡 Buy the sugarcane field to bake Pumpkin Pie (2 pumpkins + 1 sugar) worth ¥'+PR.pie+' each!</div>';
+  return h+(n?'':'All purchased!');
+}
+function clearView(){return'<div style="text-align:center"><div style="font-size:48px">👑</div><h3 style="margin:4px">Pumpkin Kingdom is born!</h3>¥'+GOAL+' reached!<br><div class="st">A bank 🏦 has been built to the south. Investing is unlocked!</div><button class="go" data-a="close">Continue</button></div>'}
+function hud(){
+  $('d').textContent='🎃¥'+PR.p+(mf>1.15?'▲':mf<.85?'▼':'');$('ap').textContent='🎃'+inv.p;$('m').textContent='💰¥'+money;
+  $('bar').textContent='🎒 🎃Pumpkins ×'+inv.p+(sugar?'  🎋Sugar ×'+inv.s+'  🥧Pies ×'+inv.pie:'')+(farm?'  🥚×'+inv.e+'  🎂×'+inv.cake:'')+(cleared?'  📊¥'+invTotal():'')+'  👥'+fans+'  🎯¥'+GOAL;
+}
+function render(){
+  hud();const p=$('panel');
+  if(!mode){p.style.display='none';return}
+  p.style.display='block';p.innerHTML=({shop:shopView,clear:clearView,city:cityView,oven:ovenView,farm:farmView,bank:bankView,result:()=>hd('🚚 Trip Result')+repHTML+'<button class="go" data-a="close">OK</button>'})[mode]();
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b||!b.dataset.a)return;
+  const a=b.dataset.a,v=+b.dataset.v;
+  if(a==='close'){mode=queue.length?queue.shift():null}
+  else if(a==='up'){const u=UP[v];if(u.ok()&&money>=u.c()){money-=u.c();u.go()}}
+  render();
+});
+
+/* ---- city shipping ---- */
+let city=false,cargo={p:0,pie:0,cake:0},trip=null,trend=[1,1,1,1],hint=[1,1,1,1],repHTML='';
+const DEST=[
+ {n:'Nearby Town',e:'🏘️',pm:1.3,qm:1.2,c:[6,10],risk:.05,fee:30,d:'Safe and steady. Sells a bit higher'},
+ {n:'Business District',e:'🌆',pm:1.6,qm:2.0,c:[10,16],risk:.25,fee:80,d:'Pies sell for 2×. Crowds can cause failures'},
+ {n:'Fine-Dining District',e:'🍽️',pm:1.0,qm:3.5,c:[4,8],risk:.35,fee:150,d:'Pies 3.5×! Few customers, fails easily'},
+ {n:'Halloween Festival',e:'🎪',pm:3.0,qm:2.5,c:[14,24],risk:.45,fee:120,d:'Pumpkins 3× and big crowds. Jackpot or bust'}];
+const TR=[.7,1,1.4];
+function refreshTrends(){DEST.forEach((d,i)=>{trend[i]=TR[R(3)];hint[i]=Math.random()<.7?trend[i]:TR[R(3)]})}
+UP.push({n:'🚚 Ship to the city (build a depot)<div class="st">Sell higher depending on the destination. It can fail too</div>',c:()=>1000,ok:()=>sugar&&!city,go:()=>{city=true;cityFX();refreshTrends()}});
+const tl=t=>t>1?'Booming':t<1?'Slump':'Normal';
+function cityView(){
+  let h=hd('🚚 Shipping Depot')+(trip?'<div class="msg">🚚 On a trip… back soon</div>':'<div class="st">Pick your cargo and destination (10s round trip, shipping fee paid upfront)</div>');
+  h+='<div class="st">🎃 Price ¥'+PR.p+' ·👥 Regulars '+fans+' ·🔥 City fatigue: fail rate +'+Math.round(Math.min(heat*3,90))+'% (more trips = more risk; recovers over time)</div>';h+='<div class="row"><span>🎃 Pumpkins <b>'+cargo.p+'</b> / '+inv.p+'</span><span><button data-a="cg" data-v="p,-5">−5</button> <button data-a="cg" data-v="p,5">+5</button></span></div>';
+  h+='<div class="row"><span>🥧 Pies <b>'+cargo.pie+'</b> / '+inv.pie+'</span><span><button data-a="cg" data-v="pie,-2">−2</button> <button data-a="cg" data-v="pie,2">+2</button></span></div>';
+  if(farm)h+='<div class="row"><span>🎂 Cakes <b>'+cargo.cake+'</b> / '+inv.cake+'</span><span><button data-a="cg" data-v="cake,-1">−1</button> <button data-a="cg" data-v="cake,1">+1</button></span></div>';
+  DEST.forEach((d,i)=>{const dis=trip||money<d.fee||cargo.p+cargo.pie+cargo.cake<1;
+    h+='<div class="row"><div>'+d.e+' '+d.n+'<div class="st">'+d.d+'<br>Fail rate ~'+Math.round(rk(i)*100)+'% ·Rumor: '+tl(hint[i])+'? (unreliable)</div></div><button data-a="go" data-v="'+i+'" '+(dis?'disabled':'')+'>Go ¥'+d.fee+'</button></div>'});
+  return h;
+}
+function settle(){
+  const d=DEST[trip.d],tr=trend[trip.d],avg=(d.c[0]+d.c[1])/2,rk0=rk(trip.d);
+  let pm=d.pm*tr,qm=d.qm*tr,cu=(d.c[0]+R(d.c[1]-d.c[0]+1)+Math.round(fans*.1))*(tr>1?1.3:tr<1?.7:1),kind='ok';
+  if(Math.random()<rk0){if(Math.random()<.4)kind='crash';else{kind='bad';pm*=.4;qm*=.4;cu*=.5}}
+  else if(Math.random()<.15){kind='great';pm*=1.3;qm*=1.3;cu*=1.5}
+  cu=Math.round(cu);const c=trip.c.cake||0,q=trip.c.pie,p=trip.c.p;let sc=0,sq=0,sp=0,rev=0;
+  if(kind!=='crash'){let n=cu;sc=Math.min(c,n);n-=sc;sq=Math.min(q,n);n-=sq;sp=Math.min(p,n);rev=Math.round(sc*PR.cake*qm+sq*PR.pie*qm+sp*PR.p*pm);inv.cake+=c-sc;inv.pie+=q-sq;inv.p+=p-sp;money+=rev}
+  const df={great:5,ok:2,bad:-1,crash:-3}[kind];fans=Math.max(0,fans+df);
+  const T0={great:'🎉 Great success!',ok:'👍 Sold without trouble',bad:'😢 Struggled in a slump…',crash:'💥 Truck accident!'}[kind],net=rev-trip.fee,ar=cu>avg?'↑':cu<avg?'↓':'→';
+  repHTML='<div style="font-size:18px"><b>'+d.e+' '+d.n+':'+T0+'</b></div><div class="st">Economy: '+tl(tr)+' ·Fail rate '+Math.round(rk0*100)+'%</div>'+
+   (kind==='crash'?'<div>🚫 Could not reach any customers; lost the cargo (🎃'+p+' 🥧'+q+' 🎂'+c+'). </div>':'<div>👥 Customers: '+cu+' (usual '+Math.round(avg)+' '+ar+')</div><div>Sold: 🎂×'+sc+' 🥧×'+sq+' 🎃×'+sp+'(🎃 ¥'+Math.round(PR.p*pm)+' each)</div><div>Brought back: 🎂×'+(c-sc)+' 🥧×'+(q-sq)+' 🎃×'+(p-sp)+'</div>')+
+   '<div>Revenue ¥'+rev+' − Shipping ¥'+trip.fee+'</div><div class="msg" style="color:'+(net>=0?'var(--ok)':'#e03131')+'">Net '+(net>=0?'+':'−')+'¥'+Math.abs(net)+'</div>'+
+   '<div style="margin-top:6px">⭐ Regulars '+(df>=0?'+':'')+df+' → total '+fans+' '+(df>0?'(Gained fans!)':'(Reputation dropped…)')+'</div>';
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b||!b.dataset.a)return;
+  const a=b.dataset.a,v=b.dataset.v;
+  if(a==='cg'){const[k,n]=v.split(',');cargo[k]=Math.max(0,Math.min(cargo[k]+ +n,k==='p'?Math.min(inv.p,30):k==='pie'?Math.min(inv.pie,15):Math.min(inv.cake,10)))}
+  else if(a==='go'){
+    const d=DEST[+v];if(trip||money<d.fee||cargo.p+cargo.pie+cargo.cake<1)return;
+    money-=d.fee;heat+=d.h;inv.p-=cargo.p;inv.pie-=cargo.pie;inv.cake-=cargo.cake;trip={d:+v,c:{...cargo},fee:d.fee,t:10};cargo={p:0,pie:0,cake:0};mode=null;fl('🚚 Departed!',180,60);
+  }else return;
+  render();
+});
+
+/* ---- risk, fans, market ---- */
+let fans=0,heat=0,mf=1,tf=1,mT=10;
+DEST.forEach((d,i)=>d.h=[1,2,3,3][i]);
+const rk=i=>Math.min(.9,DEST[i].risk+heat*.03);
+const EV=[['🌾 Bumper harvest floods the market… pumpkin prices fall',.65],['🎃 Halloween is near! Pumpkins are hot',1.8],['🌪️ Typhoon shortage! Pumpkin prices rise',1.5],['📉 Rival undercutting… pumpkin prices fall',.75],['📺 Featured on TV! Pumpkin prices soar',1.6],['😌 The market is calm',1]];
+function marketTick(dt){
+  mT-=dt;
+  if(mT<=0){mT=14+R(10);if(Math.random()<.6){const e=EV[R(EV.length)];tf=e[1];$('hint').textContent='📰 '+e[0]+' (~¥'+Math.round(30*e[1])+')'}else tf=Math.max(.6,Math.min(1.9,mf+(Math.random()-.5)*.6))}
+  mf+=(tf-mf)*Math.min(1,dt*.4);PR.p=Math.max(10,Math.round(30*mf/5)*5);
+}
+/* ---- disasters, protection, farm, cake ---- */
+let feedS=0,FC=10,autoFeed=true,farm=false,ovMode='pie',slowT=0,shake=0,dT=60,pending=null;
+const prot={wind:0,frost:0,beast:0,dry:0};
+const DIS=[{k:'wind',e:'🌪️',n:'Typhoon',tip:'Windbreak'},{k:'frost',e:'🥶',n:'Frost',tip:'Greenhouse'},{k:'beast',e:'🐗',n:'Boars',tip:'Boar Fence'},{k:'dry',e:'☀️',n:'Drought',tip:'Sprinklers'}];
+UP.push({n:'🐔 Build chicken farm (eggs · feed is pumpkins · cake oven included!)<div class="st">3 pumpkins + 5 sugar + 2 eggs = Pumpkin Cake (¥'+PR.cake+')</div>',c:()=>5000,ok:()=>sugar&&!farm,go:()=>{farm=true;farmFX()}});
+UP.push({get n(){return '🥚 Faster egg laying (Lv'+L.egg+'/3)<div class="st">Now 1 egg per '+ET().toFixed(1)+'s → '+(6*Math.pow(.7,L.egg+1)).toFixed(1)+'s</div>'},c:()=>[800,1500,2500][L.egg],ok:()=>farm&&L.egg<3,go:()=>{L.egg++}});
+[['wind','🌪️ Windbreak','Typhoon',200],['frost','🏠 Greenhouse','Frost',250],['beast','🚧 Boar Fence','Boars',150],['dry','💧 Sprinklers','Drought',300]].forEach(([k,n,t,c])=>UP.push({get n(){return n+'('+t+' defense)<div class="st">Stock '+prot[k]+' / 3 (1 per disaster, used automatically)</div>'},c:()=>c,ok:()=>prot[k]<3,go:()=>{prot[k]++}}));
+function strike(d){
+  if(prot[d.k]>0){prot[d.k]--;$('hint').textContent='🛡️ '+d.tip+' protected the fields from '+d.n+'! (Stock left: '+prot[d.k]+(prot[d.k]?'':' · used up! Buy more')+')';fl('🛡️ Protected!',180,200);return}
+  const cost=50+Math.min(800,Math.round(money*.1));money=Math.max(0,money-cost);shake=.25;
+  if(d.k!=='dry'){plots.p.forEach(p=>p.t=0);if(d.k!=='beast')plots.s.forEach(p=>p.t=0)}
+  if(d.k==='wind')inv.p=Math.floor(inv.p*.7);if(d.k==='beast')inv.p=Math.floor(inv.p*.5);if(d.k==='dry')slowT=25;
+  $('hint').textContent='💥 '+d.e+d.n+' damage! '+(d.k==='dry'?'Crop growth slowed… ':'Fields ruined… ')+'Repair cost ¥'+cost+' ('+d.tip+' would have prevented it)';fl(d.e+' Damage!',180,200);
+}
+function disTick(dt){
+  dT-=dt;if(!pending&&dT<=0){pending={d:DIS[R(4)],t:5};}
+  if(pending){pending.t-=dt;if(pending.t<=0){strike(pending.d);pending=null;dT=45+R(30)}}warnTick();
+  slowT=Math.max(0,slowT-dt);shake=Math.max(0,shake-dt*.6);
+}
+function ET(){return 6*Math.pow(.7,L.egg)}
+function farmView(){return hd('🐔 Chicken Farm')+'<div class="st">Chickens eat pumpkins to lay eggs (1 pumpkin per 2 eggs). Currently 1 egg every '+ET().toFixed(1)+'s</div><div style="margin:6px 0">Feed: 🎃 <b>'+feedS.toFixed(1)+'</b> / '+FC+' (you have 🎃'+inv.p+')'+(feedS<=0?' <span style="color:#e03131">Out of feed!</span>':'')+'</div><div class="wrap"><button data-a="fd" data-v="1">+1</button><button data-a="fd" data-v="5">+5</button><button data-a="fd" data-v="max">Fill</button></div><div class="row"><span>Auto-feed when nearby<div class="st">Turn OFF to keep pumpkins for sale</div></span><button data-a="af">'+(autoFeed?'ON':'OFF')+'</button></div>'}
+function ovenView(){return hd('🔥 Oven')+'<div class="st">Stand nearby to bake automatically. Choose what to bake</div><div class="row"><span>🥧 Pie<div class="st">2 pumpkins + 1 sugar (4s)</div></span><button data-a="om" data-v="pie">'+(ovMode==='pie'?'✔ Selected':'Select')+'</button></div><div class="row"><span>🎂 Pumpkin Cake<div class="st">3 pumpkins + 5 sugar + 2 eggs (6s)</div></span><button data-a="om" data-v="cake" '+(farm?'':'disabled')+'>'+(!farm?'Needs chicken farm':ovMode==='cake'?'✔ Selected':'Select')+'</button></div>'}
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const a=b.dataset.a,v=b.dataset.v;
+  if(a==='om'){ovMode=v;render()}
+  else if(a==='fd'){const room=Math.floor(FC-feedS),n=Math.max(0,Math.min(v==='max'?room:+v,room,inv.p));inv.p-=n;feedS+=n;if(n)fl('Feed 🎃×'+n,60,530);render()}
+  else if(a==='af'){autoFeed=!autoFeed;render()}});
+/* ---- investing ---- */
+const PRODS=[{n:'Stable Fund',e:'🏦',d:'Moves gently',vol:.012,dr:.0004},{n:'Growth Stock',e:'📈',d:'Moderately volatile',vol:.035,dr:.0004},{n:'Pumpkin Coin',e:'🪙',d:'Wild swings! High risk',vol:.08,dr:0}];
+const pr=[100,100,100],hist=PRODS.map(()=>[100]),pos=PRODS.map(()=>({c:0,u:0})),ov2={cook:0,t:0,ready:0};let invAmt=1000,invAcc=0;
+const invTotal=()=>Math.round(pos.reduce((a,p,i)=>a+p.u*pr[i],0));
+const gauss=()=>(Math.random()+Math.random()+Math.random()-1.5)*2;
+function invTick(dt){
+  invAcc+=dt;if(invAcc<.5)return;invAcc=0;
+  PRODS.forEach((p,i)=>{let r=p.dr+p.vol*gauss();if(i===2&&Math.random()<.02)r+=(Math.random()<.5?-1:1)*.25;pr[i]=Math.max(20,Math.min(500,pr[i]*(1+r)));const h=hist[i];h.push(pr[i]);if(h.length>40)h.shift()});
+  if(mode==='bank')bankLive();
+}
+function spark(i){const h=hist[i],mn=Math.min(...h),mx=Math.max(...h),rg=Math.max(1,mx-mn);return h.map((v,k)=>(k/Math.max(1,h.length-1)*100).toFixed(1)+','+(29-(v-mn)/rg*28).toFixed(1)).join(' ')}
+function holdTxt(i){const p=pos[i];if(p.u<=0)return'Not held';const v=Math.round(p.u*pr[i]),d=v-p.c;return'Principal ¥'+p.c+' → Now ¥'+v+'('+(d>=0?'+':'−')+'¥'+Math.abs(d)+' / '+(d>=0?'+':'')+(d/p.c*100).toFixed(1)+'%)'}
+function bankLive(){PRODS.forEach((p,i)=>{const a=document.getElementById('bp'+i),b=document.getElementById('bs'+i),c=document.getElementById('bh'+i);if(a)a.textContent='¥'+pr[i].toFixed(1);if(b)b.setAttribute('points',spark(i));if(c)c.textContent=holdTxt(i)})}
+function bankView(){
+  let h=hd('🏦 Investing (Pumpkin Kingdom perk)')+'<div class="st">Invest from ¥1,000 to ¥30,000 in ¥1,000 steps. Prices go up and down! Sell any time</div>';
+  h+='<div class="row"><span>Amount <b>¥'+invAmt+'</b></span><span><button data-a="ia" data-v="-5000">−5k</button> <button data-a="ia" data-v="-1000">−1k</button> <button data-a="ia" data-v="1000">+1k</button> <button data-a="ia" data-v="5000">+5k</button></span></div><div class="st">Money ¥'+money+'</div>';
+  PRODS.forEach((p,i)=>{h+='<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div><b>'+p.e+' '+p.n+'</b> <span id="bp'+i+'">¥'+pr[i].toFixed(1)+'</span> <span class="st">'+p.d+'</span></div><svg viewBox="0 0 100 30" preserveAspectRatio="none" style="width:100%;height:36px;background:var(--bg);border-radius:6px"><polyline id="bs'+i+'" points="'+spark(i)+'" fill="none" stroke="var(--acc)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg><div class="st" id="bh'+i+'">'+holdTxt(i)+'</div><div class="wrap" style="margin-top:4px"><button data-a="ib" data-v="'+i+'" '+(money<invAmt||pos[i].c+invAmt>30000?'disabled':'')+'>¥'+invAmt+' Invest</button><button data-a="is" data-v="'+i+'" '+(pos[i].u>0?'':'disabled')+'>Sell & collect</button></div></div>'});
+  return h+'<div class="st" style="margin-top:6px">* Up to ¥30,000 total per product</div>';
+}
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const a=b.dataset.a,v=+b.dataset.v;
+  if(a==='ia'){invAmt=Math.max(1000,Math.min(30000,invAmt+v));render()}
+  else if(a==='ib'){if(money>=invAmt&&pos[v].c+invAmt<=30000){money-=invAmt;pos[v].u+=invAmt/pr[v];pos[v].c+=invAmt;render()}}
+  else if(a==='is'){const p=pos[v];if(p.u>0){const val=Math.round(p.u*pr[v]),d=val-p.c;money+=val;$('hint').textContent=(d>=0?'📈 ':'📉 ')+PRODS[v].n+' sold: ¥'+val+' ('+(d>=0?'profit +':'loss −')+'¥'+Math.abs(d)+')';fl((d>=0?'+':'−')+'¥'+Math.abs(d),290,520);pos[v]={c:0,u:0};render()}}
+});
+/* ---------- 3D ---------- */
+const K=30,X3=x=>(x-180)/K,Z3=y=>(y-260)/K,dpr=Math.min(window.devicePixelRatio||1,2);
+const ren=new THREE.WebGLRenderer({canvas:cv,antialias:true});ren.setPixelRatio(dpr);ren.setSize(W,H,false);
+const scene=new THREE.Scene(),SKY=new THREE.Color(0x9fd8ff);scene.background=SKY.clone();
+const cam=new THREE.PerspectiveCamera(50,W/H,.1,100);
+const amb=new THREE.AmbientLight(0xffffff,.8),sun=new THREE.DirectionalLight(0xffffff,.6);sun.position.set(4,10,6);scene.add(amb,sun);
+const mat=c=>new THREE.MeshLambertMaterial({color:c});
+function put(m,x,y,z,p){m.position.set(x,y,z);(p||scene).add(m);return m}
+const box=(w,h,d,c,x,y,z,p)=>put(new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(c)),x,y,z,p);
+const cyl=(a,b,h,c,x,y,z,p)=>put(new THREE.Mesh(new THREE.CylinderGeometry(a,b,h,14),mat(c)),x,y,z,p);
+const cone=(r,h,c,x,y,z,p)=>put(new THREE.Mesh(new THREE.ConeGeometry(r,h,14),mat(c)),x,y,z,p);
+const ball=(r,c,x,y,z,p)=>put(new THREE.Mesh(new THREE.SphereGeometry(r,14,12),mat(c)),x,y,z,p);
+function spr(t,fs,bg,sc){
+  const c=document.createElement('canvas'),x=c.getContext('2d');x.font='bold '+fs+'px sans-serif';
+  const w=Math.ceil(x.measureText(t).width)+20,h=Math.ceil(fs*1.5);c.width=w;c.height=h;
+  x.font='bold '+fs+'px sans-serif';x.textAlign='center';x.textBaseline='middle';
+  if(bg==='o'){x.lineWidth=5;x.strokeStyle='#000';x.strokeText(t,w/2,h/2);x.fillStyle='#fff'}
+  else if(bg){x.fillStyle=bg;x.beginPath();x.roundRect(0,0,w,h,h/3);x.fill();x.fillStyle='#222'}
+  x.fillText(t,w/2,h/2);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true,depthTest:false}));
+  s.scale.set(w/h*sc,sc,1);return s;
+}
+/* ground */
+box(14,.2,5.8,0x8ec57a,0,-.1,-5.8);box(14,.2,15.6,0xdcc9a0,0,-.1,4.87);box(14,.3,.2,0x8a5a2b,0,.15,-2.93);box(2,.02,13,0xc9b48a,0,.01,5.2);
+const G={},CC=[0xe05a8a,0x4caf50,0x9c6ade,0xffb300,0x26a69a,0xef5350],CW=['👵','👦','🧔','👩‍🎤','🧓','👧'];
+function person(c){const g=new THREE.Group();cyl(.28,.34,.8,c,0,.4,0,g);ball(.26,0xffd9b3,0,1.05,0,g);scene.add(g);return g}
+function label(id,e,l,y){
+  const g=G[id];['ic','lb'].forEach(k=>{if(g.userData[k])g.remove(g.userData[k])});
+  const ic=spr(e,40,0,1.1);ic.position.y=y;g.add(ic);const lb=spr(l,22,'o',.5);lb.position.set(0,.2,1.2);g.add(lb);g.userData.ic=ic;g.userData.lb=lb;
+}
+const plots={p:[],s:[]};
+OB.forEach(o=>{
+  const g=new THREE.Group();g.position.set(X3(o.x),0,Z3(o.y));scene.add(g);G[o.id]=g;
+  if(o.id==='pf'||o.id==='sf'){
+    box(2.6,.12,4.6,o.id==='pf'?0x6b4a2b:0x7a5a3a,0,.06,0,g);
+    for(let i=0;i<10;i++){
+      const pg=new THREE.Group();pg.position.set(i%2?.55:-.55,.1,-1.8+Math.floor(i/2)*.9);g.add(pg);
+      let m;
+      if(o.id==='pf'){m=ball(.38,0xff8c1a,0,.3,0,pg);m.scale.y=.8;cyl(.05,.05,.2,0x3a7d2a,0,.68,0,pg)}
+      else{m=new THREE.Group();pg.add(m);[-.15,0,.15].forEach((dx,k)=>cyl(.06,.06,1.2,0x7bc043,dx,.6+k*.05,k%2?.1:-.1,m))}
+      plots[o.id==='pf'?'p':'s'].push({g:pg,t:0,vis:false});
+    }
+  }
+  if(o.id==='ov'){box(1.6,1,1.3,0xb0b0b8,0,.5,0,g);cone(1.3,.7,0x8d4b2f,0,1.35,0,g);cyl(.15,.15,1,0x555566,.5,1.6,-.2,g);g.visible=false}
+  if(o.id==='shop'){cyl(.08,.08,1.8,0x6b4423,0,.9,0,g);box(1.8,.9,.12,0xffd166,0,1.8,0,g)}
+  if(o.id==='truck'){const tb=new THREE.Group();g.add(tb);g.userData.tb=tb;box(1.6,.8,.9,0x4da3ff,0,.7,0,tb);box(.6,.6,.9,0x2f7fd6,1.0,.6,0,tb);[-.5,.5,1.0].forEach(x=>{const w=cyl(.22,.22,1,0x222222,x,.22,0,tb);w.rotation.x=Math.PI/2});box(2.6,.05,1.6,0xb9b09a,0,.03,0,g);g.visible=false}
+  if(o.id==='sell'){box(2.2,.9,.9,0x8a5a2b,0,.45,0,g);box(2.4,.1,1,0xe9c892,0,.95,0,g);box(2.5,.12,1.3,0xe8590c,0,2.1,0,g);cyl(.06,.06,1.2,0x6b4423,-1.1,1.5,.45,g);cyl(.06,.06,1.2,0x6b4423,1.1,1.5,.45,g)}
+});
+label('pf','🎃','Pumpkin Field',1.9);label('sf','🔒','For Sale',1.9);label('shop','📣','Upgrades',2.9);label('ov','🥧','Oven',2.9);label('sell','🏪','Stall',2.9);label('truck','🚚','Depot',2.4);
+function cityFX(){G.truck.visible=true;fl('🚚 Depot built!',180,60)}
+function sugarFX(){label('sf','🎋','Sugarcane Field',2.2);G.ov.visible=true;fl('🥧 Pies unlocked!',P.x,P.y-30)}
+const pg=person(0x3b82f6);box(.12,.12,.2,0xff8a65,0,1.05,.28,pg);
+const hat=spr('🧑‍🌾',34,0,.9);hat.position.y=2;pg.add(hat);
+const ring=new THREE.Mesh(new THREE.RingGeometry(.25,.35,24),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.7}));
+ring.rotation.x=-Math.PI/2;ring.position.y=.05;scene.add(ring);
+/* customers */
+const SL=[180,134,88],cs=[];let spT=2;
+function spawn(){
+  if(cs.length>=3)return;const i=cs.length;
+  const w=R(6),rr=Math.random(),want=farm&&rr<.3?'cake':sugar&&rr<.6?'pie':'p',g=person(CC[w]);
+  g.position.set(X3(SL[i]-70),0,Z3(385));box(.12,.12,.2,0xff8a65,0,1.05,.28,g);
+  const b=spr(CW[w]+' '+({p:'🎃',pie:'🥧',cake:'🎂'}[want]),26,'#fff',.7);b.position.y=2.1;g.add(b);cs[i]={g,want,pat:30};
+}
+function leave(i,t){scene.remove(cs[i].g);fl(t,SL[i],385);cs.splice(i,1)}
+const near=o=>Math.hypot(P.x-o.x,P.y-(o.y+44))<34,ov={cook:0,t:0,ready:0,type:'pie'};let ovKey='';
+/* input */
+const ray=new THREE.Raycaster(),pl=new THREE.Plane(new THREE.Vector3(0,1,0),0),hit=new THREE.Vector3(),nd=new THREE.Vector2();
+cv.addEventListener('pointerdown',e=>{
+  return;
+  const r=cv.getBoundingClientRect(),px=e.clientX-r.left,py=e.clientY-r.top;
+  let best=null,bd=r.width*.14;
+  OB.forEach(o=>{if(!G[o.id].visible)return;const v=G[o.id].position.clone();v.y=1.4;v.project(cam);const d=Math.hypot((v.x+1)/2*r.width-px,(1-v.y)/2*r.height-py);if(d<bd){bd=d;best=o}});
+  if(best){P.tx=best.x;P.ty=best.y+44;P.pend=best;P.mv=true;return}
+  nd.set(px/r.width*2-1,-(py/r.height*2-1));ray.setFromCamera(nd,cam);
+  if(!ray.ray.intersectPlane(pl,hit))return;
+  P.tx=Math.max(20,Math.min(W-20,hit.x*K+180));P.ty=Math.max(110,Math.min(H-20,hit.z*K+260));P.pend=null;P.mv=true;
+});
+/* ---- protection and farm 3D ---- */
+const vis={wind:[],frost:[],beast:[],dry:[]};
+['pf','sf'].forEach(id=>{const g=G[id];
+  const gh=new THREE.Mesh(new THREE.BoxGeometry(2.8,1.3,4.8),new THREE.MeshLambertMaterial({color:0xcfefff,transparent:true,opacity:.28}));gh.position.y=.65;g.add(gh);vis.frost.push(gh);
+  [[0,-2.4,2.9,.06],[0,2.4,2.9,.06],[-1.45,0,.06,4.8],[1.45,0,.06,4.8]].forEach(([x,z,w,d])=>vis.beast.push(box(w,.5,d,0x8a5a2b,x,.3,z,g)));
+  [-1.8,0,1.8].forEach(z=>{vis.dry.push(cyl(.05,.05,.8,0x4da3ff,0,.4,z,g),ball(.11,0x74c0fc,0,.85,z,g))});
+});
+for(let x=-6;x<=6;x+=2)vis.wind.push(cyl(.12,.15,.8,0x7b4a1e,x,.4,-8.3),cone(.55,1.4,0x2e8b3a,x,1.4,-8.3));
+const gf=new THREE.Group();gf.position.set(X3(60),0,Z3(560));scene.add(gf);G.farm=gf;gf.visible=false;
+box(2.8,.08,2.4,0x9ccc65,0,.04,0,gf);box(1.1,.9,.8,0xc0392b,.7,.45,-.6,gf);cone(.95,.6,0x7b241c,.7,1.2,-.6,gf);
+[[0,1.2,2.8,.06],[0,-1.2,2.8,.06],[-1.4,0,.06,2.4],[1.4,0,.06,2.4]].forEach(([x,z,w,d])=>box(w,.4,d,0x8a5a2b,x,.25,z,gf));
+const chk=[0,1,2,3].map(i=>{const c=new THREE.Group();gf.add(c);ball(.17,0xffffff,0,.28,0,c);ball(.09,0xffffff,.12,.42,0,c);cone(.04,.1,0xffa000,.2,.42,0,c);return c});
+OB.push({id:'farm',x:60,y:560});const FO=OB[OB.length-1];
+let eggsF=0,fKey='';
+function farmFX(){G.farm.visible=true;G.ov2.visible=true;fl('🐔 Chicken farm built!',60,530)}
+function visTick(dt){
+  for(const k in vis)vis[k].forEach(m=>m.visible=prot[k]>0);
+  chk.forEach((c,i)=>{c.position.set(Math.sin(T*.7+i*2)*.6-.2,0,Math.cos(T*.5+i*1.7)*.4);c.rotation.y=T*.7+i*2+1.6;c.scale.y=feedS>0?1:.6});
+}
+function farmTick(dt){
+  if(!farm)return;
+  if(autoFeed&&near(FO)&&feedS<FC&&inv.p>0){const m=Math.min(Math.floor(FC-feedS),inv.p);if(m>0){inv.p-=m;feedS+=m;fl('Feed 🎃×'+m,60,530)}}
+  if(feedS>0){const de=dt/ET();eggsF=Math.min(12,eggsF+de);feedS=Math.max(0,feedS-de*.5)}const n=Math.floor(eggsF);
+  if(near(FO)&&n>0){inv.e+=n;eggsF-=n;fl('+🥚×'+n,60,530)}
+  const k=feedS>0?'🥚×'+Math.floor(eggsF)+' Feed '+Math.ceil(feedS):'No feed! 🥚×'+Math.floor(eggsF);if(k!==fKey){fKey=k;label('farm','🐔','Chicken Farm '+k,2.2)}
+}
+/* ---- joystick ---- */
+const stage=cv.parentElement,keys={};let joy={on:false,id:null,ox:0,oy:0,vx:0,vy:0},joyOn=false,actId=null;
+const jb=document.createElement('div'),jk=document.createElement('div'),ab=document.createElement('button');
+jb.style.cssText='position:absolute;width:96px;height:96px;margin:-48px 0 0 -48px;border-radius:50%;border:2px solid rgba(255,255,255,.75);background:rgba(0,0,0,.2);display:none;pointer-events:none;z-index:5';
+jk.style.cssText='position:absolute;left:26px;top:26px;width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.9);box-shadow:0 2px 6px rgba(0,0,0,.35)';
+ab.style.cssText='position:absolute;right:10px;bottom:10px;z-index:6;display:none;background:var(--acc);color:#fff;font-weight:700;padding:12px 16px;box-shadow:0 2px 8px rgba(0,0,0,.35)';
+jb.appendChild(jk);stage.appendChild(jb);stage.appendChild(ab);
+cv.addEventListener('pointerdown',e=>{
+  if(mode||joy.on)return;const r=stage.getBoundingClientRect();
+  joy={on:true,id:e.pointerId,ox:e.clientX,oy:e.clientY,vx:0,vy:0};
+  jb.style.left=(e.clientX-r.left)+'px';jb.style.top=(e.clientY-r.top)+'px';jb.style.display='block';jk.style.transform='translate(0,0)';
+});
+window.addEventListener('pointermove',e=>{
+  if(!joy.on||e.pointerId!==joy.id)return;
+  let dx=e.clientX-joy.ox,dy=e.clientY-joy.oy;const d=Math.hypot(dx,dy),M=44;if(d>M){dx*=M/d;dy*=M/d}
+  joy.vx=dx/M;joy.vy=dy/M;jk.style.transform='translate('+dx+'px,'+dy+'px)';
+});
+const joyEnd=e=>{if(joy.on&&e.pointerId===joy.id){joy={on:false,id:null,ox:0,oy:0,vx:0,vy:0};jb.style.display='none'}};
+window.addEventListener('pointerup',joyEnd);window.addEventListener('pointercancel',joyEnd);
+window.addEventListener('keydown',e=>keys[e.key]=1);window.addEventListener('keyup',e=>keys[e.key]=0);
+function joyTick(dt){
+  if(mode){if(joy.on)joyEnd({pointerId:joy.id});joyOn=false;return}
+  let vx=joy.vx,vy=joy.vy;
+  if(keys.ArrowLeft||keys.a)vx-=1;if(keys.ArrowRight||keys.d)vx+=1;if(keys.ArrowUp||keys.w)vy-=1;if(keys.ArrowDown||keys.s)vy+=1;
+  const m=Math.hypot(vx,vy);joyOn=m>.12;
+  if(joyOn){const k=Math.min(1,m)/m;P.x=Math.max(20,Math.min(W-20,P.x+vx*k*150*dt));P.y=Math.max(110,Math.min(WH-20,P.y+vy*k*150*dt));P.rot=Math.atan2(vx,vy);P.mv=false;P.pend=null}
+}
+const ACT={shop:['📣 Upgrades','shop'],sf:['🔒 Sugarcane Field','shop'],truck:['🚚 Shipping Depot','city'],farm:['🐔 Chicken Farm','farm'],bank:['🏦 Bank','bank']};
+function actTick(){
+  let best=null,bd=46;
+  if(!mode)OB.forEach(o=>{const a=ACT[o.id];if(!a||!G[o.id].visible||(o.id==='sf'&&sugar)||(o.id==='ov'&&!sugar))return;const d=Math.hypot(P.x-o.x,P.y-(o.y+44));if(d<bd){bd=d;best=o}});
+  actId=best?best.id:null;ab.style.display=best?'block':'none';
+  if(best){const t='View '+ACT[best.id][0];if(ab.textContent!==t)ab.textContent=t}
+}
+ab.addEventListener('click',()=>{if(actId&&!mode){mode=ACT[actId][1];render()}});
+/* ---- warning and panel queue ---- */
+const queue=[],warnEl=document.createElement('div'),wst=document.createElement('style');
+wst.textContent='@keyframes wb{50%{opacity:.4}}';document.head.appendChild(wst);
+warnEl.style.cssText='position:absolute;left:0;right:0;top:16%;text-align:center;color:#e00000;font-weight:900;background:rgba(255,255,255,.85);padding:12px 6px;border-top:4px solid #e00000;border-bottom:4px solid #e00000;animation:wb .7s infinite;pointer-events:none;z-index:7;display:none';
+cv.parentElement.appendChild(warnEl);
+function warnTick(){
+  if(pending){const k=pending.d.k;warnEl.style.display='block';warnEl.innerHTML='<div style="font-size:26px">⚠️ '+pending.d.n+' disaster incoming!</div><div style="font-size:14px">'+Math.ceil(pending.t)+'s left ·'+(prot[k]>0?pending.d.tip+' will protect you':'a '+pending.d.tip+' would help')+'</div>'}
+  else warnEl.style.display='none';
+}
+function qOpen(m){if(mode)queue.push(m);else mode=m;render()}
+/* ---- cake oven and bank ---- */
+const g2=new THREE.Group();g2.position.set(X3(300),0,Z3(380));scene.add(g2);G.ov2=g2;g2.visible=false;
+box(1.6,1,1.3,0xb0b0b8,0,.5,0,g2);cone(1.3,.7,0xc2185b,0,1.35,0,g2);cyl(.15,.15,1,0x555566,.5,1.6,-.2,g2);
+OB.push({id:'ov2',x:300,y:380});const ov2i=OB.length-1;label('ov2','🎂','Cake Oven',2.9);
+const gb=new THREE.Group();gb.position.set(X3(290),0,Z3(560));scene.add(gb);G.bank=gb;gb.visible=false;
+box(2.2,1.1,1.5,0xf0ead6,0,.55,0,gb);box(2.6,.25,1.9,0x8a8fa0,0,1.25,0,gb);[-.8,0,.8].forEach(x=>cyl(.1,.1,1.1,0xffffff,x,.55,.85,gb));
+OB.push({id:'bank',x:290,y:560});label('bank','🏦','Bank',2.7);
+/* loop */
+let trKey='',last=performance.now(),camInit=false,hT=0;const camT=new THREE.Vector3(),cG=new THREE.Color(0x7bc043),cO=new THREE.Color(0xff8c1a),cU=new THREE.Color(0x8fc46a),cP=new THREE.Color(0xff8c1a);
+function loop(n){
+  const dt=Math.min(.05,(n-last)/1000);last=n;T+=dt;
+  if(P.mv&&!mode){
+    const dx=P.tx-P.x,dy=P.ty-P.y,d=Math.hypot(dx,dy),s=150*dt;
+    if(d<=s){P.x=P.tx;P.y=P.ty;P.mv=false;const o=P.pend;P.pend=null;if(o&&(o.id==='shop'||(o.id==='sf'&&!sugar))){mode='shop';render()}else if(o&&o.id==='truck'){mode='city';render()}else if(o&&o.id==='ov'){mode='oven';render()}else if(o&&o.id==='farm'){mode='farm';render()}}
+    else{P.x+=dx/d*s;P.y+=dy/d*s;P.rot=Math.atan2(dx,dy)}
+  }
+  marketTick(dt);disTick(dt);visTick(dt);farmTick(dt);joyTick(dt);actTick();invTick(dt);heat=Math.max(0,heat-dt*.08);
+  /* growth + harvest */
+  const pn=PN();
+  [['p','pf'],['s','sf']].forEach(([k,id])=>{
+    const on=k==='p'||sugar,nr=near(OB.find(o=>o.id===id));let got=0;
+    plots[k].forEach((p,i)=>{
+      p.g.visible=on&&i<pn;if(!p.g.visible)return;
+      p.t=Math.min(1,p.t+dt/GT()*(slowT>0?.3:1));
+      if(k==='p'){p.g.scale.setScalar(.2+.8*p.t);p.g.children[0].material.color.copy(cU).lerp(cP,p.t)}
+      else p.g.scale.set(1,.2+.8*p.t,1);
+      if(p.t>=1&&nr&&on){p.t=0;got++}
+    });
+    if(got){inv[k]+=got;fl('+'+(k==='p'?'🎃':'🎋')+'×'+got,OB.find(o=>o.id===id).x,60)}
+  });
+  /* customers + selling */
+  spT-=dt;if(spT<=0){spawn();spT=SI()*(.7+Math.random()*.6)}
+  const atS=near(OB[4]);
+  for(let i=cs.length-1;i>=0;i--){const c=cs[i];
+    c.pat-=dt;c.g.position.y=Math.abs(Math.sin(T*3+i))*.05;
+    if(atS&&inv[c.want]>0){const key=c.want;inv[key]--;money+=PR[key];fl('+¥'+PR[key],SL[i],370);leave(i,'');continue}
+    if(c.pat<=0)leave(i,'😢');
+  }
+  cs.forEach((c,i)=>{c.g.position.x+=(X3(SL[i])-c.g.position.x)*Math.min(1,dt*5);c.g.rotation.y=i===0?0:Math.PI/2});
+  /* ovens (bake simultaneously) */
+  [[ov,OB[3],'pie',sugar],[ov2,OB[ov2i],'cake',farm]].forEach(([o,ob,kd,on])=>{
+    if(!on)return;
+    if(o.cook>0){o.t-=dt;if(o.t<=0){o.ready=o.cook;o.cook=0}}
+    if(near(ob)){
+      if(o.ready>0){inv[kd]+=o.ready;fl('+'+(kd==='cake'?'🎂':'🥧')+'×'+o.ready,ob.x,ob.y-30);o.ready=0}
+      if(o.cook===0&&o.ready===0){
+        const k=kd==='cake'?Math.min(3,Math.floor(inv.p/3),Math.floor(inv.s/5),Math.floor(inv.e/2)):Math.min(3,Math.floor(inv.p/2),inv.s);
+        if(k>0){if(kd==='cake'){inv.p-=3*k;inv.s-=5*k;inv.e-=2*k}else{inv.p-=2*k;inv.s-=k}o.cook=k;o.t=kd==='cake'?6:4;fl('Baking 🔥',ob.x,ob.y-30)}
+      }
+    }
+    const key=o.ready?(kd==='cake'?'🎂':'🥧')+'×'+o.ready+' ready!':o.cook?'Baking…':(kd==='cake'?'Cake Oven':'Pie Oven');
+    if(key!==o.key){o.key=key;label(ob.id,kd==='cake'?'🎂':'🥧',key,2.9)}
+  });
+  if(trip){trip.t-=dt;if(trip.t<=0){settle();trip=null;refreshTrends();qOpen('result')}}
+  G.truck.userData.tb.visible=!trip;
+  const tk=trip?'Away '+Math.ceil(trip.t)+'s':'Depot';if(tk!==trKey){trKey=tk;label('truck','🚚',tk,2.4)}
+  /* floats, player, camera */
+  floats.forEach(f=>{f.life-=dt;if(!f.s){f.s=spr(f.t||' ',26,'o',.6);scene.add(f.s)}f.s.position.set(X3(f.x),2.3+(1.6-f.life)*.8,Z3(f.y));f.s.material.opacity=Math.min(1,f.life)});
+  floats=floats.filter(f=>{if(f.life>0)return true;scene.remove(f.s);return false});
+  pg.position.set(X3(P.x),(P.mv||joyOn)?Math.abs(Math.sin(T*12))*.12:0,Z3(P.y));pg.rotation.y=P.rot||0;
+  ring.visible=P.mv&&!P.pend;ring.position.x=X3(P.tx);ring.position.z=Z3(P.ty);
+  const cx=X3(P.x)*.35,cz=Math.min(Z3(P.y),10);camT.set(cx,10.5,cz+8.5);
+  if(!camInit){cam.position.copy(camT);camInit=true}else cam.position.lerp(camT,.08);
+  cam.position.x+=Math.sin(T*70)*shake;cam.lookAt(cam.position.x,0,cam.position.z-8.5);
+  fade=Math.max(0,fade-dt*1.2);$('fade').style.opacity=fade;
+  hT-=dt;if(hT<=0){hud();hT=.2}
+  if(!cleared&&money>=GOAL){cleared=true;G.bank.visible=true;qOpen('clear')}
+  ren.render(scene,cam);requestAnimationFrame(loop);
+}
+fl('Grow and sell pumpkins!',180,260);render();requestAnimationFrame(loop);
+</script>
+<script>
+/* Pumpkin Shop BGM: generated in the browser with the Web Audio API (no audio files needed). */
+(function(){
+  var BPM=108,STEP=60/BPM/2;
+  /* chord progression C - Am - F - G (bass, then chord tones as MIDI notes) */
+  var CH=[[48,60,64,67],[45,57,60,64],[41,53,57,60],[43,55,59,62]];
+  /* 8 bars x 8 eighth-notes of melody (MIDI note, 0 = rest) */
+  var MEL=[
+    64,67,64,60,62,64,67,0,   69,67,64,0,67,64,60,0,
+    65,69,72,69,65,69,67,0,   67,71,74,71,67,0,62,0,
+    72,71,72,67,64,67,72,0,   69,72,69,64,60,64,69,0,
+    65,67,69,72,69,67,65,0,   67,71,74,71,67,62,67,0];
+  var ctx=null,master=null,noise=null,timer=null,step=0,next=0,on=true;
+  try{on=localStorage.getItem('pumpkin-music')!=='off'}catch(e){}
+  function hz(n){return 440*Math.pow(2,(n-69)/12)}
+  function tone(type,freq,t,dur,vol){
+    var o=ctx.createOscillator(),g=ctx.createGain();
+    o.type=type;o.frequency.value=freq;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g);g.connect(master);o.start(t);o.stop(t+dur+0.05);
+  }
+  function hat(t,vol){
+    var s=ctx.createBufferSource(),g=ctx.createGain(),h=ctx.createBiquadFilter();
+    s.buffer=noise;h.type='highpass';h.frequency.value=7000;
+    g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.0001,t+0.04);
+    s.connect(h);h.connect(g);g.connect(master);s.start(t);s.stop(t+0.05);
+  }
+  function sched(){
+    while(next<ctx.currentTime+0.3){
+      var bar=Math.floor(step/8),ch=CH[bar%4],s8=step%8,t=next;
+      var m=MEL[step];
+      if(m)tone('triangle',hz(m),t,STEP*1.8,0.11);
+      if(s8===0||s8===4)tone('sine',hz(ch[0]+(s8?7:0)),t,STEP*3.2,0.2);
+      if(s8%2===1)for(var i=1;i<4;i++)tone('triangle',hz(ch[i]),t,STEP*0.9,0.035);
+      hat(t,s8%2?0.03:0.015);
+      step=(step+1)%64;next+=STEP;
+    }
+  }
+  function init(){
+    if(ctx)return;
+    var AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+    ctx=new AC();master=ctx.createGain();master.gain.value=0.5;
+    var comp=ctx.createDynamicsCompressor();master.connect(comp);comp.connect(ctx.destination);
+    var b=ctx.createBuffer(1,Math.floor(ctx.sampleRate*0.1),ctx.sampleRate),d=b.getChannelData(0);
+    for(var i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+    noise=b;next=ctx.currentTime+0.1;
+  }
+  function play(){
+    init();if(!ctx||!on)return;
+    ctx.resume();
+    if(!timer){next=Math.max(next,ctx.currentTime+0.05);timer=setInterval(sched,100)}
+  }
+  function stop(){
+    if(timer){clearInterval(timer);timer=null}
+    if(ctx)ctx.suspend();
+  }
+  /* browsers only allow audio after a user gesture, so start on the first tap / key press */
+  ['pointerdown','keydown','touchstart'].forEach(function(ev){window.addEventListener(ev,play,{passive:true})});
+  document.addEventListener('visibilitychange',function(){
+    if(!ctx)return;
+    if(document.hidden)ctx.suspend();else if(on&&timer)ctx.resume();
+  });
+  /* mute button */
+  var btn=document.createElement('button');
+  btn.textContent=on?'🔊':'🔇';btn.title='Music on/off';btn.setAttribute('aria-label','Toggle music');
+  btn.style.cssText='position:absolute;top:8px;right:8px;z-index:8;width:38px;height:38px;padding:0;border-radius:50%;font-size:18px;line-height:1;background:rgba(255,255,255,.78);border:1px solid rgba(0,0,0,.2);cursor:pointer';
+  btn.addEventListener('click',function(){
+    on=!on;
+    try{localStorage.setItem('pumpkin-music',on?'on':'off')}catch(e){}
+    btn.textContent=on?'🔊':'🔇';
+    if(on)play();else stop();
+  });
+  (document.querySelector('.stage')||document.body).appendChild(btn);
+})();
+</script>
+</body>
+</html>
